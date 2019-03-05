@@ -162,3 +162,77 @@ class SplunkXMLBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
     def finalize(self):
         self.queries += self.dash_suf
         return self.queries
+
+
+class SplunkDMBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
+    """Converts Sigma rule into data model Splunk searches to be used with Splunk Enterprise Security Product"""
+    identifier = "splunkdm"
+    active = True
+    index_field = "index"
+    queries = ''
+
+
+    # Sourcetype to Data Model Mapping it is hard coded for now
+    # | tstats `summariesonly` count from datamodel=Application_State where All_Application_State.process=\"*mstsc.exe*\" by All_Application_State.dest All_Application_State.process | `drop_dm_object_name(\"All_Application_State\")` | sort - count
+
+
+    reEscape = re.compile('("|(?<!\\\\)\\\\(?![*?\\\\]))')
+    reClear = SplunkBackend.reClear
+    andToken = SplunkBackend.andToken
+    orToken = SplunkBackend.orToken
+    notToken = SplunkBackend.notToken
+    subExpression = SplunkBackend.subExpression
+    listExpression = SplunkBackend.listExpression
+    listSeparator = SplunkBackend.listSeparator
+    valueExpression = SplunkBackend.valueExpression
+    nullExpression = SplunkBackend.nullExpression
+    notNullExpression = SplunkBackend.notNullExpression
+    mapExpression = SplunkBackend.mapExpression
+    mapListsSpecialHandling = SplunkBackend.mapListsSpecialHandling
+    mapListValueExpression = SplunkBackend.mapListValueExpression
+
+    def Dump(self,obj):
+        for attr in dir(obj):
+            print("obj.{0} = {1}".format(attr, getattr(obj, attr)))
+
+    def generateMapItemListNode(self, key, value):
+        return "(" + (" OR ".join(['%s=%s' % (key, self.generateValueNode(item)) for item in value])) + ")"
+
+    def generateAggregation(self, agg):
+        if agg == None:
+            return ""
+        if agg.aggfunc == sigma.parser.condition.SigmaAggregationParser.AGGFUNC_NEAR:
+            return ""
+        if agg.groupfield == None:
+            return " | stats %s(%s) as val | search val %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
+        else:
+            return " | stats %s(%s) as val by %s | search val %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.groupfield or "", agg.cond_op, agg.condition)
+
+    def generate(self, sigmaparser):
+        """Method is called for each sigma rule and receives the parsed rule (SigmaParser)"""
+
+        # detect datamodel
+        self.logsource = sigmaparser.parsedyaml['logsource']
+        print ("logsource : {0}".format(self.logsource))
+
+        if self.logsource == 'product':
+            if self.logsource['product'] == 'windows' and self.logsource['service'] == 'sysmon':
+                datamodel = 'Endpoint'
+        elif self.logsource['category']:
+            if self.logsource['category'] == 'dns':
+                datamodel ='Network'
+                datamodel_object = "DNS_Traffic"
+
+        pre = "| tstats `summariesonly` count from datamodel=" + datamodel + " " + datamodel_object + " where " 
+
+
+        for parsed in sigmaparser.condparsed:
+            print(type(parsed))
+            query = self.generateQuery(parsed)
+            if query is not None:
+
+                self.queries += pre
+                self.queries += query
+
+    def finalize(self):
+        return self.queries
